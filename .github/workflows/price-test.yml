@@ -1,0 +1,68 @@
+name: Price test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install curl_cffi
+      - name: Try reading prices
+        shell: python
+        run: |
+          import json, re, os
+          from curl_cffi import requests
+
+          TESTS = [
+              ("Sainsbury's page", "https://www.sainsburys.co.uk/groceries/product/yeo-valley-organic-little-yeos-fruity-favourites-kids-yogurt-selection-4x85g"),
+              ("Sainsbury's data feed", "https://www.sainsburys.co.uk/groceries-api/gol-services/product/v1/product?filter[product_seo_url]=gb%2Fgroceries%2Fyeo-valley-organic-little-yeos-fruity-favourites-kids-yogurt-selection-4x85g"),
+              ("Asda page", "https://www.asda.com/groceries/product/kids-yogurts-fromage-frais/yeo-valley-organic-fruity-favourites-whole-milk-yogurt-4-x-85g/7518557"),
+          ]
+
+          def find_prices(text):
+              found = []
+              # Structured product data (JSON-LD)
+              for block in re.findall(r'<script[^>]*application/ld\+json[^>]*>(.*?)</script>', text, re.S):
+                  for m in re.finditer(r'"price"\s*:\s*"?([\d.]+)', block):
+                      found.append("JSON-LD price " + m.group(1))
+              # Sainsbury's API fields
+              try:
+                  d = json.loads(text)
+                  p = d["products"][0]
+                  found.append("name: " + p.get("name", "?"))
+                  found.append("price: " + str(p.get("retail_price", {}).get("price")))
+                  if p.get("nectar_price"):
+                      found.append("nectar: " + json.dumps(p["nectar_price"])[:200])
+                  for pr in p.get("promotions", []) or []:
+                      found.append("offer: " + str(pr.get("strap_line")))
+              except Exception:
+                  pass
+              # Anything that looks like a price
+              pounds = list(dict.fromkeys(re.findall(r'£\s?\d+\.\d\d', text)))[:6]
+              if pounds:
+                  found.append("£ amounts seen: " + ", ".join(pounds))
+              return found
+
+          out = ["# Price test results", ""]
+          for label, url in TESTS:
+              for mode, kw in [("plain", {}), ("as Chrome", {"impersonate": "chrome"})]:
+                  try:
+                      r = requests.get(url, timeout=30, headers={"Accept-Language": "en-GB"}, **kw)
+                      prices = find_prices(r.text)
+                      ok = "✅" if r.status_code == 200 and prices else "❌"
+                      out.append(f"## {ok} {label} ({mode}) — HTTP {r.status_code}, {len(r.text)} chars")
+                      out += [f"- {p}" for p in prices] or ["- no price found"]
+                      if not prices:
+                          out.append("- start of response: `" + re.sub(r'\s+', ' ', r.text[:200]).replace('`', "'") + "`")
+                  except Exception as e:
+                      out.append(f"## ❌ {label} ({mode}) — error: {e}")
+                  out.append("")
+
+          report = "\n".join(out)
+          print(report)
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+              f.write(report)
