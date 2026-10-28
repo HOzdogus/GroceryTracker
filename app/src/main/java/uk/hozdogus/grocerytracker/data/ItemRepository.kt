@@ -5,6 +5,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import uk.hozdogus.grocerytracker.fetch.FetchResult
 import uk.hozdogus.grocerytracker.fetch.PageFetcher
 import uk.hozdogus.grocerytracker.fetch.ProductUrl
@@ -15,6 +17,8 @@ class ItemRepository(
     private val scope: CoroutineScope,
 ) {
     private val fetcher = PageFetcher(context)
+    private val prefs = context.getSharedPreferences("checks", Context.MODE_PRIVATE)
+    private val checkLock = Mutex()
 
     sealed class AddState {
         data object Idle : AddState()
@@ -85,4 +89,83 @@ class ItemRepository(
     }
 
     suspend fun delete(item: Item) = dao.delete(item)
+
+    suspend fun setTarget(item: Item, pence: Int?) = dao.update(item.copy(targetPrice = pence))
+
+    sealed class CheckState {
+        data object Idle : CheckState()
+        data class Running(val done: Int, val total: Int, val name: String) : CheckState()
+        data class Finished(val summary: String) : CheckState()
+    }
+
+    private val _checkState = MutableStateFlow<CheckState>(CheckState.Idle)
+
+    /** Progress of the latest "Check now". The UI calls [consumeCheckState] after showing the summary. */
+    val checkState: StateFlow<CheckState> = _checkState
+
+    fun consumeCheckState() {
+        if (_checkState.value is CheckState.Finished) _checkState.value = CheckState.Idle
+    }
+
+    private val _lastRunAt = MutableStateFlow(prefs.getLong(KEY_LAST_RUN, 0L).takeIf { it > 0 })
+
+    /** When every item was last checked together. */
+    val lastRunAt: StateFlow<Long?> = _lastRunAt
+
+    /** Checks every item now, showing progress through [checkState]. */
+    fun checkAllNow() = checkNow(null)
+
+    /** Checks one item now, showing progress through [checkState]. */
+    fun checkItemNow(id: Long) = checkNow(id)
+
+    private fun checkNow(id: Long?) {
+        if (_checkState.value is CheckState.Running) return
+        _checkState.value = CheckState.Running(0, 0, "")
+        scope.launch {
+            _checkState.value = try {
+                val items = if (id == null) dao.getAll() else listOfNotNull(dao.get(id))
+                CheckState.Finished(summarise(checkItems(items, recordRun = id == null)))
+            } catch (e: Exception) {
+                CheckState.Finished("Check failed: $e")
+            }
+        }
+    }
+
+    /**
+     * Checks [items] one at a time and saves the results. A failed page leaves the item's prices
+     * alone and marks it "couldn't check".
+     */
+    suspend fun checkItems(items: List<Item>, recordRun: Boolean): List<CheckOutcome> = checkLock.withLock {
+        val outcomes = mutableListOf<CheckOutcome>()
+        items.forEachIndexed { index, item ->
+            _checkState.value = CheckState.Running(index, items.size, item.name)
+            val result = fetcher.fetch(item.url)
+            // Re-read so an edit made during the fetch (such as a new target price) isn't lost.
+            val latest = dao.get(item.id) ?: return@forEachIndexed
+            val outcome = applyCheck(latest, result, System.currentTimeMillis())
+            dao.update(outcome.item)
+            outcome.point?.let { dao.insertPrice(it) }
+            outcomes += outcome
+        }
+        if (recordRun) {
+            val now = System.currentTimeMillis()
+            prefs.edit().putLong(KEY_LAST_RUN, now).apply()
+            _lastRunAt.value = now
+        }
+        outcomes
+    }
+
+    private fun summarise(outcomes: List<CheckOutcome>): String {
+        if (outcomes.isEmpty()) return "Nothing to check."
+        val cheaper = outcomes.count { it.dropped }
+        val failed = outcomes.count { it.point == null }
+        val parts = mutableListOf("Checked ${outcomes.size} item${if (outcomes.size == 1) "" else "s"}")
+        parts += if (cheaper == 0) "no drops" else "$cheaper cheaper"
+        if (failed > 0) parts += "$failed couldn't be checked"
+        return parts.joinToString(" · ")
+    }
+
+    private companion object {
+        const val KEY_LAST_RUN = "last_run_at"
+    }
 }

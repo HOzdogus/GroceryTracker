@@ -22,5 +22,7 @@ data class Item(
     val addedAt: Long = System.currentTimeMillis(),
     val lastCheckedAt: Long? = null,
     val lastCheckOk: Boolean = true,
+    /** Why the last check failed, shown on the detail screen. Null after a successful check. */
+    val lastCheckError: String? = null,
     val lastChangeAt: Long? = null,
 )

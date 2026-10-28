@@ -12,6 +12,12 @@ interface ItemDao {
     @Query("SELECT * FROM items ORDER BY name COLLATE NOCASE")
     fun observeAll(): Flow<List<Item>>
 
+    @Query("SELECT * FROM items ORDER BY name COLLATE NOCASE")
+    suspend fun getAll(): List<Item>
+
+    @Query("SELECT * FROM items WHERE id = :id")
+    fun observe(id: Long): Flow<Item?>
+
     @Query("SELECT * FROM items WHERE id = :id")
     suspend fun get(id: Long): Item?
 

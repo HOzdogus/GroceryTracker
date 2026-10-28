@@ -3,6 +3,8 @@ package uk.hozdogus.grocerytracker
 import android.content.ClipboardManager
 import android.content.Intent
 import android.os.Bundle
+import android.view.Menu
+import android.view.MenuItem
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.isVisible
 import androidx.lifecycle.Lifecycle
@@ -11,14 +13,18 @@ import androidx.lifecycle.repeatOnLifecycle
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.snackbar.Snackbar
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import uk.hozdogus.grocerytracker.data.Item
 import uk.hozdogus.grocerytracker.data.ItemRepository.AddState
+import uk.hozdogus.grocerytracker.data.ItemRepository.CheckState
 import uk.hozdogus.grocerytracker.databinding.ActivityMainBinding
 import uk.hozdogus.grocerytracker.databinding.DialogAddBinding
 import uk.hozdogus.grocerytracker.fetch.ProductUrl
 import uk.hozdogus.grocerytracker.ui.ItemAdapter
 import uk.hozdogus.grocerytracker.ui.formatPence
+import uk.hozdogus.grocerytracker.ui.formatWhen
+import uk.hozdogus.grocerytracker.ui.orderForList
 
 class MainActivity : AppCompatActivity() {
 
@@ -30,10 +36,8 @@ class MainActivity : AppCompatActivity() {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
         setSupportActionBar(binding.toolbar)
-        supportActionBar?.subtitle = "v${BuildConfig.VERSION_NAME}"
-
         val adapter = ItemAdapter(
-            onClick = { /* item detail comes in milestone 3 */ },
+            onClick = { startActivity(ItemDetailActivity.intent(this, it.id)) },
             onLongClick = ::confirmDelete,
         )
         binding.list.layoutManager = LinearLayoutManager(this)
@@ -45,11 +49,17 @@ class MainActivity : AppCompatActivity() {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 launch {
                     dao.observeAll().collect { items ->
-                        adapter.submitList(items)
+                        adapter.submitList(orderForList(items, System.currentTimeMillis()))
                         binding.empty.isVisible = items.isEmpty()
                     }
                 }
+                launch { repository.lastRunAt.collect(::showLastRun) }
+                launch {
+                    repository.addState.combine(repository.checkState) { add, check -> add to check }
+                        .collect { (add, check) -> showProgress(add, check) }
+                }
                 launch { repository.addState.collect(::showAddState) }
+                launch { repository.checkState.collect(::showCheckState) }
             }
         }
 
@@ -59,6 +69,44 @@ class MainActivity : AppCompatActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         handleShare(intent)
+    }
+
+    override fun onCreateOptionsMenu(menu: Menu): Boolean {
+        menuInflater.inflate(R.menu.main, menu)
+        return true
+    }
+
+    override fun onOptionsItemSelected(item: MenuItem): Boolean = when (item.itemId) {
+        R.id.action_check_now -> {
+            repository.checkAllNow()
+            true
+        }
+        else -> super.onOptionsItemSelected(item)
+    }
+
+    private fun showLastRun(at: Long?) {
+        val checked = at?.let { "checked ${formatWhen(it)}" } ?: "not checked yet"
+        supportActionBar?.subtitle = "v${BuildConfig.VERSION_NAME} · $checked"
+    }
+
+    /** One banner for whichever is running; adding takes priority because the user is waiting on it. */
+    private fun showProgress(add: AddState, check: CheckState) {
+        val text = when {
+            add is AddState.Working -> "Reading price from ${add.shop.label}… (up to 30 seconds)"
+            check is CheckState.Running && check.total > 0 ->
+                "Checking ${check.done + 1} of ${check.total}: ${check.name}"
+            check is CheckState.Running -> "Checking…"
+            else -> null
+        }
+        binding.progressBanner.isVisible = text != null
+        binding.progressText.text = text
+    }
+
+    private fun showCheckState(state: CheckState) {
+        if (state is CheckState.Finished) {
+            Snackbar.make(binding.root, state.summary, Snackbar.LENGTH_LONG).show()
+            repository.consumeCheckState()
+        }
     }
 
     private fun handleShare(intent: Intent?) {
@@ -92,11 +140,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showAddState(state: AddState) {
-        binding.progressBanner.isVisible = state is AddState.Working
         when (state) {
-            AddState.Idle -> Unit
-            is AddState.Working ->
-                binding.progressText.text = "Reading price from ${state.shop.label}… (up to 30 seconds)"
+            AddState.Idle, is AddState.Working -> Unit
             is AddState.Added -> {
                 Snackbar.make(
                     binding.root,

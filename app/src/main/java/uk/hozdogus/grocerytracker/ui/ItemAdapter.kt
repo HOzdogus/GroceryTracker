@@ -1,8 +1,10 @@
 package uk.hozdogus.grocerytracker.ui
 
+import android.content.res.ColorStateList
 import android.view.LayoutInflater
 import android.view.ViewGroup
 import androidx.core.content.ContextCompat
+import androidx.core.view.isVisible
 import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.ListAdapter
 import androidx.recyclerview.widget.RecyclerView
@@ -25,15 +27,24 @@ class ItemAdapter(
         val item = getItem(position)
         val b = holder.binding
         val ctx = b.root.context
+        val now = System.currentTimeMillis()
         b.shopBadge.text = item.shop.label
-        b.shopBadge.background.setTint(
-            ContextCompat.getColor(
-                ctx,
-                if (item.shop == Shop.ASDA) R.color.asda_green else R.color.sainsburys_orange,
-            )
-        )
+        b.shopBadge.backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(ctx, shopColor(item.shop)))
         b.name.text = item.name
         b.price.text = formatPence(item.currentPrice)
+
+        val change = recentChange(item, now)
+        b.change.isVisible = change != null
+        if (change != null) {
+            b.change.text = formatChange(change)
+            b.change.setTextColor(ContextCompat.getColor(ctx, if (change < 0) R.color.price_down else R.color.price_up))
+        }
+
+        val subtitle = mutableListOf("Lowest ${formatPence(item.lowestPrice)}")
+        item.targetPrice?.let { subtitle += "target ${formatPence(it)}" }
+        if (!item.lastCheckOk) subtitle += "⚠ couldn't check"
+        b.subtitle.text = subtitle.joinToString(" · ")
+
         b.root.setOnClickListener { onClick(item) }
         b.root.setOnLongClickListener {
             onLongClick(item)
@@ -46,3 +57,5 @@ class ItemAdapter(
         override fun areContentsTheSame(a: Item, b: Item) = a == b
     }
 }
+
+fun shopColor(shop: Shop) = if (shop == Shop.ASDA) R.color.asda_green else R.color.sainsburys_orange
