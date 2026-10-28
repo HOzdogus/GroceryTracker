@@ -1,5 +1,6 @@
 package uk.hozdogus.grocerytracker.ui
 
+import uk.hozdogus.grocerytracker.data.Item
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
@@ -9,6 +10,12 @@ import kotlin.math.abs
 
 fun formatPence(pence: Int?): String =
     if (pence == null) "–" else String.format(Locale.UK, "£%d.%02d", pence / 100, pence % 100)
+
+/** "Nectar £1.75" and/or "was £2.15", or null when the item has no offer. */
+fun offerText(item: Item): String? = listOfNotNull(
+    item.nectarPrice?.let { "Nectar ${formatPence(it)}" },
+    item.wasPrice?.let { "was ${formatPence(it)}" },
+).joinToString(" · ").ifEmpty { null }
 
 /** "↓ 89p" or "↑ £1.10". */
 fun formatChange(diff: Int): String {

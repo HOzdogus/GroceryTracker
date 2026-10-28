@@ -10,6 +10,7 @@ import kotlinx.coroutines.sync.withLock
 import uk.hozdogus.grocerytracker.fetch.FetchResult
 import uk.hozdogus.grocerytracker.fetch.PageFetcher
 import uk.hozdogus.grocerytracker.fetch.ProductUrl
+import uk.hozdogus.grocerytracker.notify.Notifier
 
 class ItemRepository(
     context: Context,
@@ -17,6 +18,7 @@ class ItemRepository(
     private val scope: CoroutineScope,
 ) {
     private val fetcher = PageFetcher(context)
+    private val notifier = Notifier(context)
     private val prefs = context.getSharedPreferences("checks", Context.MODE_PRIVATE)
     private val checkLock = Mutex()
 
@@ -61,7 +63,7 @@ class ItemRepository(
     private suspend fun addParsed(parsed: ProductUrl.Result.Ok): AddState {
         dao.findByUrl(parsed.url)?.let { return AddState.AlreadyTracked(it) }
 
-        return when (val result = fetcher.fetch(parsed.url)) {
+        return when (val result = fetcher.fetch(parsed.url, parsed.shop)) {
             is FetchResult.Success -> {
                 val now = System.currentTimeMillis()
                 val item = Item(
@@ -72,11 +74,18 @@ class ItemRepository(
                     currentPrice = result.price,
                     lowestPrice = result.price,
                     highestPrice = result.price,
+                    wasPrice = result.wasPrice,
+                    nectarPrice = result.nectarPrice,
                     addedAt = now,
                     lastCheckedAt = now,
                 )
                 val id = dao.insert(item)
-                dao.insertPrice(PricePoint(itemId = id, price = result.price, checkedAt = now))
+                dao.insertPrice(
+                    PricePoint(
+                        itemId = id, price = result.price,
+                        wasPrice = result.wasPrice, nectarPrice = result.nectarPrice, checkedAt = now,
+                    )
+                )
                 AddState.Added(item.copy(id = id))
             }
             is FetchResult.Blocked -> AddState.Failed(
@@ -89,6 +98,13 @@ class ItemRepository(
     }
 
     suspend fun delete(item: Item) = dao.delete(item)
+
+    /** Loads the item's page and describes what the price and offer detection saw. */
+    suspend fun diagnose(item: Item): String = when (val result = fetcher.fetch(item.url, item.shop)) {
+        is FetchResult.Success -> "Name: ${result.name}\n${result.debug}"
+        is FetchResult.Blocked -> "Blocked by a robot check.\n${result.details}"
+        is FetchResult.Failed -> "${result.reason}\n${result.details}"
+    }
 
     suspend fun setTarget(item: Item, pence: Int?) = dao.update(item.copy(targetPrice = pence))
 
@@ -132,33 +148,39 @@ class ItemRepository(
     }
 
     /**
-     * Checks [items] one at a time and saves the results. A failed page leaves the item's prices
-     * alone and marks it "couldn't check".
+     * Checks [items] one at a time, saves the results and notifies about drops and targets hit.
+     * A failed page leaves the item's prices alone and marks it "couldn't check".
      */
     suspend fun checkItems(items: List<Item>, recordRun: Boolean): List<CheckOutcome> = checkLock.withLock {
         val outcomes = mutableListOf<CheckOutcome>()
-        items.forEachIndexed { index, item ->
-            _checkState.value = CheckState.Running(index, items.size, item.name)
-            val result = fetcher.fetch(item.url)
-            // Re-read so an edit made during the fetch (such as a new target price) isn't lost.
-            val latest = dao.get(item.id) ?: return@forEachIndexed
-            val outcome = applyCheck(latest, result, System.currentTimeMillis())
-            dao.update(outcome.item)
-            outcome.point?.let { dao.insertPrice(it) }
-            outcomes += outcome
+        try {
+            items.forEachIndexed { index, item ->
+                _checkState.value = CheckState.Running(index, items.size, item.name)
+                val result = fetcher.fetch(item.url, item.shop)
+                // Re-read so an edit made during the fetch (such as a new target price) isn't lost.
+                val latest = dao.get(item.id) ?: return@forEachIndexed
+                val outcome = applyCheck(latest, result, System.currentTimeMillis())
+                dao.update(outcome.item)
+                outcome.point?.let { dao.insertPrice(it) }
+                outcomes += outcome
+            }
+        } finally {
+            // Callers that show a summary replace this straight away.
+            _checkState.value = CheckState.Idle
         }
         if (recordRun) {
             val now = System.currentTimeMillis()
             prefs.edit().putLong(KEY_LAST_RUN, now).apply()
             _lastRunAt.value = now
         }
+        notifier.notifyChanges(outcomes)
         outcomes
     }
 
     private fun summarise(outcomes: List<CheckOutcome>): String {
         if (outcomes.isEmpty()) return "Nothing to check."
         val cheaper = outcomes.count { it.dropped }
-        val failed = outcomes.count { it.point == null }
+        val failed = outcomes.count { !it.ok }
         val parts = mutableListOf("Checked ${outcomes.size} item${if (outcomes.size == 1) "" else "s"}")
         parts += if (cheaper == 0) "no drops" else "$cheaper cheaper"
         if (failed > 0) parts += "$failed couldn't be checked"

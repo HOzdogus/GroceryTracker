@@ -16,4 +16,5 @@
     <string name="open_website">Open on website</string>
     <string name="edit_target">Edit target</string>
     <string name="checking">Checking…</string>
+    <string name="diagnostics">Page diagnostics</string>
 </resources>

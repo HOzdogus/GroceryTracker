@@ -5,6 +5,8 @@ import android.content.Intent
 import android.content.res.ColorStateList
 import android.net.Uri
 import android.os.Bundle
+import android.view.Menu
+import android.view.MenuItem
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.core.view.isVisible
@@ -23,6 +25,7 @@ import uk.hozdogus.grocerytracker.ui.ImageLoader
 import uk.hozdogus.grocerytracker.ui.formatChange
 import uk.hozdogus.grocerytracker.ui.formatPence
 import uk.hozdogus.grocerytracker.ui.formatWhen
+import uk.hozdogus.grocerytracker.ui.offerText
 import uk.hozdogus.grocerytracker.ui.parsePence
 import uk.hozdogus.grocerytracker.ui.recentChange
 import uk.hozdogus.grocerytracker.ui.shopColor
@@ -88,6 +91,13 @@ class ItemDetailActivity : AppCompatActivity() {
             )
         }
 
+        val offer = buildList {
+            item.wasPrice?.let { add("Offer — was ${formatPence(it)}") }
+            item.nectarPrice?.let { add("${formatPence(it)} with Nectar") }
+        }
+        binding.offer.isVisible = offerText(item) != null
+        binding.offer.text = offer.joinToString("\n")
+
         binding.range.text = "Lowest ${formatPence(item.lowestPrice)} · Highest ${formatPence(item.highestPrice)}"
         binding.lastChecked.text = buildString {
             item.lastCheckedAt?.let { append("Last checked ").append(formatWhen(it)) }
@@ -105,6 +115,32 @@ class ItemDetailActivity : AppCompatActivity() {
             lifecycleScope.launch { ImageLoader.load(image)?.let(binding.image::setImageBitmap) }
         }
         binding.image.isVisible = image != null
+    }
+
+    override fun onCreateOptionsMenu(menu: Menu): Boolean {
+        menu.add(Menu.NONE, MENU_DIAGNOSE, Menu.NONE, R.string.diagnostics)
+        return true
+    }
+
+    override fun onOptionsItemSelected(menuItem: MenuItem): Boolean {
+        if (menuItem.itemId != MENU_DIAGNOSE) return super.onOptionsItemSelected(menuItem)
+        val item = item ?: return true
+        val progress = MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.diagnostics)
+            .setMessage("Reading the ${item.shop.label} page… (up to 30 seconds)")
+            .setCancelable(false)
+            .show()
+        lifecycleScope.launch {
+            val report = repository.diagnose(item)
+            progress.dismiss()
+            val dialog = MaterialAlertDialogBuilder(this@ItemDetailActivity)
+                .setTitle(R.string.diagnostics)
+                .setMessage(report)
+                .setPositiveButton(R.string.ok, null)
+                .show()
+            dialog.findViewById<android.widget.TextView>(android.R.id.message)?.setTextIsSelectable(true)
+        }
+        return true
     }
 
     private fun showCheckState(state: CheckState) {
@@ -152,6 +188,7 @@ class ItemDetailActivity : AppCompatActivity() {
 
     companion object {
         private const val EXTRA_ID = "item_id"
+        private const val MENU_DIAGNOSE = 1
 
         fun intent(context: Context, id: Long): Intent =
             Intent(context, ItemDetailActivity::class.java).putExtra(EXTRA_ID, id)

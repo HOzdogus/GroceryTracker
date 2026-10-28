@@ -14,14 +14,26 @@ import android.webkit.WebViewClient
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 import org.json.JSONTokener
+import uk.hozdogus.grocerytracker.data.Shop
 import kotlin.coroutines.resume
 import kotlin.math.roundToInt
 
 /** What a page load produced. Prices are in pence. */
 sealed class FetchResult {
-    data class Success(val name: String, val imageUrl: String?, val price: Int) : FetchResult()
+    data class Success(
+        val name: String,
+        val imageUrl: String?,
+        val price: Int,
+        /** Asda Rollback (or other) "was" price, when the page shows one. */
+        val wasPrice: Int? = null,
+        /** Sainsbury's Nectar price, when the page shows one. */
+        val nectarPrice: Int? = null,
+        /** What the offer-price detection saw, for the diagnostics screen. */
+        val debug: String = "",
+    ) : FetchResult()
 
     /** The shop showed a block or robot check instead of the product. */
     data class Blocked(val details: String) : FetchResult()
@@ -37,18 +49,22 @@ class PageFetcher(context: Context) {
 
     private val appContext = context.applicationContext
 
-    suspend fun fetch(url: String): FetchResult = withContext(Dispatchers.Main) {
-        suspendCancellableCoroutine { cont ->
-            val session = Session(url) { result -> if (cont.isActive) cont.resume(result) }
-            cont.invokeOnCancellation { session.finish(null) }
-            session.start()
-        }
+    suspend fun fetch(url: String, shop: Shop): FetchResult = withContext(Dispatchers.Main) {
+        // Backstop in case the WebView stops answering; normal give-up happens after about 30 seconds.
+        withTimeoutOrNull(OVERALL_TIMEOUT_MS) {
+            suspendCancellableCoroutine { cont ->
+                val session = Session(url, shop) { result -> if (cont.isActive) cont.resume(result) }
+                cont.invokeOnCancellation { session.finish(null) }
+                session.start()
+            }
+        } ?: FetchResult.Failed("The page took too long to load.", "Link: $url")
     }
 
-    private inner class Session(val url: String, val onDone: (FetchResult) -> Unit) {
+    private inner class Session(val url: String, val shop: Shop, val onDone: (FetchResult) -> Unit) {
         private val handler = Handler(Looper.getMainLooper())
         private var web: WebView? = null
         private var tries = 0
+        private var apiWaits = 0
         private var httpStatus = 0
         private var networkError: String? = null
         private var lastRead: JSONObject? = null
@@ -98,7 +114,14 @@ class PageFetcher(context: Context) {
                 val read = decode(value)
                 if (read != null) lastRead = read
                 val success = read?.let(::toSuccess)
+                // On Sainsbury's, give the in-page product data request a few seconds to bring the Nectar price.
+                val waitForApi = success != null && shop == Shop.SAINSBURYS &&
+                    read?.isNull("api") == true && apiWaits < MAX_API_WAITS
                 when {
+                    waitForApi -> {
+                        apiWaits++
+                        handler.postDelayed(::poll, API_POLL_MS)
+                    }
                     success != null -> finish(success)
                     tries >= MAX_TRIES -> finish(giveUp())
                     else -> handler.postDelayed(::poll, POLL_MS)
@@ -147,30 +170,62 @@ class PageFetcher(context: Context) {
 
     private fun toSuccess(read: JSONObject): FetchResult.Success? {
         val product = read.optJSONObject("product") ?: return null
-        val price = product.str("price")?.toDoubleOrNull() ?: return null
+        val price = product.str("price")?.let(::toPence) ?: return null
         if (price <= 0) return null
         val name = product.str("name") ?: read.str("ogTitle") ?: read.str("title") ?: "Unnamed item"
         val image = product.str("image")?.takeIf { it.startsWith("http") }
             ?: read.str("ogImage")?.takeIf { it.startsWith("http") }
-        return FetchResult.Success(name.trim(), image, (price * 100).roundToInt())
+
+        val offers = read.optJSONObject("offers")
+        val api = read.optJSONObject("api")
+        // A "was" price must be above the current price and a Nectar price below it; anything else
+        // is a unit price or another product's price that happened to be nearby.
+        val was = (product.str("ldWas") ?: offers?.str("was"))?.let(::toPence)?.takeIf { it > price }
+        val nectar = (api?.str("nectar") ?: offers?.str("nectar"))?.let(::toPence)?.takeIf { it in 1 until price }
+
+        val debug = buildString {
+            append("Price (JSON-LD): ").append(product.str("price"))
+            append("\nWas price (JSON-LD): ").append(product.str("ldWas") ?: "none")
+            append("\nText around the price: ").append(offers?.str("context") ?: "(price element not found)")
+            append("\nWas price in that text: ").append(offers?.str("was") ?: "none")
+            append("\nNectar price in that text: ").append(offers?.str("nectar") ?: "none")
+            if (!read.isNull("api")) append("\nSainsbury's product data: ").append(api.toString().take(400))
+            append("\n\nSaved: price ").append(price).append("p, was ")
+                .append(was?.let { "${it}p" } ?: "none").append(", Nectar ")
+                .append(nectar?.let { "${it}p" } ?: "none")
+        }
+        return FetchResult.Success(name.trim(), image, price, was, nectar, debug)
     }
+
+    private fun toPence(text: String): Int? = text.toDoubleOrNull()?.let { (it * 100).roundToInt() }
 
     /** optString() turns JSON null into "null"; this returns real null for missing or blank values. */
     private fun JSONObject.str(key: String): String? =
-        if (isNull(key)) null else optString(key).takeIf { it.isNotBlank() }
+        if (isNull(key)) null else optString(key).takeIf { it.isNotBlank() && it != "null" }
 
     companion object {
         private const val FIRST_POLL_MS = 3_000L
         private const val POLL_MS = 2_000L
         private const val MAX_TRIES = 12
+        private const val API_POLL_MS = 1_000L
+        private const val MAX_API_WAITS = 4
+        private const val OVERALL_TIMEOUT_MS = 45_000L
 
-        /** Returns {title, blocked, product: {name, image, price}, ogTitle, ogImage} as a JSON string. */
+        /**
+         * Returns {title, blocked, product: {name, image, price, ldWas}, offers: {context, was, nectar},
+         * api: {status, nectar, price, promos, error}, ogTitle, ogImage} as a JSON string.
+         *
+         * "offers" is read from the text around the first element showing the JSON-LD price, which is
+         * the main product's price box rather than the carousels further down the page. "api" is the
+         * Sainsbury's product data request, made from the page itself; it stays null until it answers.
+         */
         private val EXTRACT_JS = """
             (function(){
-              var r = {title: document.title || '', blocked: false, product: null, ogTitle: null, ogImage: null};
+              var r = {title: document.title || '', blocked: false, product: null, offers: null, api: null, ogTitle: null, ogImage: null};
               var t = document.body ? document.body.innerText.slice(0, 3000) : '';
               r.blocked = /access denied|are you a robot|captcha|request blocked|verify you are human|pardon our interruption|unusual traffic/i.test(t + ' ' + r.title);
               function first(x){ return Array.isArray(x) ? x[0] : x; }
+              function list(x){ return x == null ? [] : (Array.isArray(x) ? x : [x]); }
               function isProduct(n){ var ty = n['@type']; return ty === 'Product' || (Array.isArray(ty) && ty.indexOf('Product') >= 0); }
               function walk(n){
                 if (!n || typeof n !== 'object') return null;
@@ -186,15 +241,68 @@ class PageFetcher(context: Context) {
                   var o = first(p.offers) || {};
                   var price = o.price != null ? o.price : o.lowPrice;
                   if (price == null && o.priceSpecification) price = first(o.priceSpecification).price;
+                  var was = null;
+                  list(p.offers).forEach(function(of){
+                    list(of.priceSpecification).forEach(function(s){
+                      if (s && s.price != null && /strikethrough|listprice/i.test(String(s.priceType || ''))) was = String(s.price);
+                    });
+                  });
                   var img = first(p.image);
                   if (img && typeof img === 'object') img = img.url || img.contentUrl;
-                  r.product = {name: p.name || null, image: img || null, price: price != null ? String(price) : null};
+                  r.product = {name: p.name || null, image: img || null, price: price != null ? String(price) : null, ldWas: was};
                 } catch (e) {}
               }
-              var m = document.querySelector('meta[property="og:title"]');
-              if (m) r.ogTitle = m.getAttribute('content');
-              m = document.querySelector('meta[property="og:image"]');
-              if (m) r.ogImage = m.getAttribute('content');
+              if (r.product && r.product.price && document.body) {
+                var v = Number(r.product.price);
+                var shown = ['£' + v.toFixed(2)];
+                if (v < 1) shown.push(Math.round(v * 100) + 'p');
+                var el = null, all = document.body.getElementsByTagName('*');
+                for (var j = 0; j < all.length && !el; j++) {
+                  var tc = all[j].textContent;
+                  if (tc && tc.length <= 24 && shown.indexOf(tc.replace(/\s/g, '')) >= 0) el = all[j];
+                }
+                if (el) {
+                  var box = el;
+                  for (var k = 0; k < 5 && box.parentElement; k++) {
+                    if ((box.parentElement.innerText || '').length > 600) break;
+                    box = box.parentElement;
+                  }
+                  var ctx = (box.innerText || '').replace(/\s+/g, ' ').trim();
+                  r.offers = {context: ctx.slice(0, 400), was: null, nectar: null};
+                  var m = ctx.match(/\bwas\s*£\s?(\d+(?:\.\d{1,2})?)/i);
+                  if (m) r.offers.was = m[1];
+                  else if ((m = ctx.match(/\bwas\s*(\d{1,2})p\b/i))) r.offers.was = String(Number(m[1]) / 100);
+                  m = ctx.match(/£\s?(\d+\.\d{2})\s*(?:with\s+)?nectar/i) || ctx.match(/nectar\s*(?:price)?\s*:?\s*£\s?(\d+\.\d{2})/i);
+                  if (m) r.offers.nectar = m[1];
+                  else if ((m = ctx.match(/\b(\d{1,2})p\s*(?:with\s+)?nectar/i))) r.offers.nectar = String(Number(m[1]) / 100);
+                }
+              }
+              if (location.hostname.indexOf('sainsburys.co.uk') >= 0 && r.product) {
+                var g = window.__gtApi || (window.__gtApi = {state: 'new'});
+                if (g.state === 'new') {
+                  g.state = 'loading';
+                  var slug = location.pathname.split('/').filter(Boolean).pop();
+                  fetch('/groceries-api/gol-services/product/v1/product?filter[product_seo_url]=gb%2Fgroceries%2F' + encodeURIComponent(slug),
+                        {credentials: 'include', headers: {'Accept': 'application/json'}})
+                    .then(function(res){ g.status = res.status; return res.json(); })
+                    .then(function(d){
+                      var p = d && d.products && d.products[0];
+                      if (!p) { g.error = 'no product in response'; }
+                      else {
+                        g.nectar = p.nectar_price && p.nectar_price.retail_price != null ? String(p.nectar_price.retail_price) : null;
+                        g.price = p.retail_price && p.retail_price.price != null ? String(p.retail_price.price) : null;
+                        g.promos = (p.promotions || []).map(function(x){ return x.strap_line; }).join(' | ').slice(0, 200);
+                      }
+                      g.state = 'done';
+                    })
+                    .catch(function(e){ g.error = String(e).slice(0, 120); g.state = 'done'; });
+                }
+                if (g.state === 'done') r.api = {status: g.status || 0, nectar: g.nectar || null, price: g.price || null, promos: g.promos || null, error: g.error || null};
+              }
+              var mt = document.querySelector('meta[property="og:title"]');
+              if (mt) r.ogTitle = mt.getAttribute('content');
+              mt = document.querySelector('meta[property="og:image"]');
+              if (mt) r.ogImage = mt.getAttribute('content');
               return JSON.stringify(r);
             })()
         """.trimIndent()

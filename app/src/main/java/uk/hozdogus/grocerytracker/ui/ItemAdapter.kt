@@ -40,7 +40,9 @@ class ItemAdapter(
             b.change.setTextColor(ContextCompat.getColor(ctx, if (change < 0) R.color.price_down else R.color.price_up))
         }
 
-        val subtitle = mutableListOf("Lowest ${formatPence(item.lowestPrice)}")
+        val subtitle = mutableListOf<String>()
+        offerText(item)?.let { subtitle += it }
+        subtitle += "Lowest ${formatPence(item.lowestPrice)}"
         item.targetPrice?.let { subtitle += "target ${formatPence(it)}" }
         if (!item.lastCheckOk) subtitle += "⚠ couldn't check"
         b.subtitle.text = subtitle.joinToString(" · ")
