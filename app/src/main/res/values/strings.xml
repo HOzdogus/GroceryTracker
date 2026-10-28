@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Grocery Tracker</string>
+    <string name="empty_list">No items yet.\n\nShare a product page from the Asda or Sainsbury\'s app or website to start tracking its price.</string>
+</resources>

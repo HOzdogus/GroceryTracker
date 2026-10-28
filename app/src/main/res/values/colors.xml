@@ -1,0 +1,8 @@
+<resources>
+    <color name="brand">#2E7D32</color>
+    <color name="asda_green">#68A51C</color>
+    <color name="sainsburys_orange">#F06C00</color>
+    <color name="price_down">#2E7D32</color>
+    <color name="price_up">#C62828</color>
+    <color name="ic_launcher_background">#2E7D32</color>
+</resources>
