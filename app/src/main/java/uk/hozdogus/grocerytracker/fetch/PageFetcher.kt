@@ -52,7 +52,7 @@ class PageFetcher(context: Context) {
     suspend fun fetch(url: String, shop: Shop): FetchResult = withContext(Dispatchers.Main) {
         // Backstop in case the WebView stops answering; normal give-up happens after about 30 seconds.
         withTimeoutOrNull(OVERALL_TIMEOUT_MS) {
-            suspendCancellableCoroutine { cont ->
+            suspendCancellableCoroutine<FetchResult> { cont ->
                 val session = Session(url, shop) { result -> if (cont.isActive) cont.resume(result) }
                 cont.invokeOnCancellation { session.finish(null) }
                 session.start()
