@@ -1,4 +1,11 @@
 <resources>
     <string name="app_name">Grocery Tracker</string>
-    <string name="empty_list">No items yet.\n\nShare a product page from the Asda or Sainsbury\'s app or website to start tracking its price.</string>
+    <string name="share_label">Track price</string>
+    <string name="empty_list">No items yet.\n\nShare a product page from the Asda or Sainsbury\'s app or website, or tap Add and paste a link.</string>
+    <string name="add">Add</string>
+    <string name="add_title">Add item</string>
+    <string name="add_hint">Asda or Sainsbury\'s product link</string>
+    <string name="cancel">Cancel</string>
+    <string name="ok">OK</string>
+    <string name="delete">Delete</string>
 </resources>

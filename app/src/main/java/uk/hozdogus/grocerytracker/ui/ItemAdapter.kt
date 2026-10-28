@@ -13,6 +13,7 @@ import uk.hozdogus.grocerytracker.databinding.ItemRowBinding
 
 class ItemAdapter(
     private val onClick: (Item) -> Unit,
+    private val onLongClick: (Item) -> Unit,
 ) : ListAdapter<Item, ItemAdapter.Holder>(Diff) {
 
     class Holder(val binding: ItemRowBinding) : RecyclerView.ViewHolder(binding.root)
@@ -34,6 +35,10 @@ class ItemAdapter(
         b.name.text = item.name
         b.price.text = formatPence(item.currentPrice)
         b.root.setOnClickListener { onClick(item) }
+        b.root.setOnLongClickListener {
+            onLongClick(item)
+            true
+        }
     }
 
     private object Diff : DiffUtil.ItemCallback<Item>() {
