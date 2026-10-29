@@ -3,6 +3,7 @@
 Android app that tracks Asda and Sainsbury's prices and notifies you when they drop.
 
 - **Add items** by sharing a product page from Chrome or the shop apps ("Track price"), or tap **Add** and paste a link.
+- **Groups** put the same product from different shops into one row showing the cheapest shop. Tap a group to see every shop's price and their history together. After adding an item you're asked whether to group it. You can also change it from the item screen, or use **Add another shop** on a group.
 - **Daily check** around 8am (needs a network connection). Items that couldn't be checked are retried 2 and 6 hours later. A failed check never counts as a price change.
 - **Notifications** for drops and target prices. Several at once are combined into one summary.
 - **Offer prices** (best effort): Asda Rollback "was" prices and Sainsbury's Nectar prices. The detail screen's menu has **Page diagnostics**, which shows what the detection saw.

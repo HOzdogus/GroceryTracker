@@ -1,7 +1,6 @@
 package uk.hozdogus.grocerytracker
 
 import android.Manifest
-import android.content.ClipboardManager
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
@@ -24,12 +23,13 @@ import uk.hozdogus.grocerytracker.data.Item
 import uk.hozdogus.grocerytracker.data.ItemRepository.AddState
 import uk.hozdogus.grocerytracker.data.ItemRepository.CheckState
 import uk.hozdogus.grocerytracker.databinding.ActivityMainBinding
-import uk.hozdogus.grocerytracker.databinding.DialogAddBinding
-import uk.hozdogus.grocerytracker.fetch.ProductUrl
-import uk.hozdogus.grocerytracker.ui.ItemAdapter
+import uk.hozdogus.grocerytracker.ui.EntryAdapter
+import uk.hozdogus.grocerytracker.ui.ListEntry
+import uk.hozdogus.grocerytracker.ui.buildEntries
 import uk.hozdogus.grocerytracker.ui.formatPence
 import uk.hozdogus.grocerytracker.ui.formatWhen
-import uk.hozdogus.grocerytracker.ui.orderForList
+import uk.hozdogus.grocerytracker.ui.pickGroup
+import uk.hozdogus.grocerytracker.ui.showAddDialog
 
 class MainActivity : AppCompatActivity() {
 
@@ -43,22 +43,31 @@ class MainActivity : AppCompatActivity() {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
         setSupportActionBar(binding.toolbar)
-        val adapter = ItemAdapter(
-            onClick = { startActivity(ItemDetailActivity.intent(this, it.id)) },
-            onLongClick = ::confirmDelete,
+        val adapter = EntryAdapter(
+            onClick = { entry ->
+                when (entry) {
+                    is ListEntry.Single -> startActivity(ItemDetailActivity.intent(this, entry.item.id))
+                    is ListEntry.Group -> startActivity(GroupActivity.intent(this, entry.group.id))
+                }
+            },
+            // Groups are managed from their own screen; long-press deletes single items.
+            onLongClick = { entry -> (entry as? ListEntry.Single)?.let { confirmDelete(it.item) } },
         )
         binding.list.layoutManager = LinearLayoutManager(this)
         binding.list.adapter = adapter
-        binding.addButton.setOnClickListener { showAddDialog() }
+        binding.addButton.setOnClickListener {
+            showAddDialog(getString(R.string.add_title)) { repository.add(it) }
+        }
 
         val dao = (application as GroceryApp).db.items()
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 launch {
-                    dao.observeAll().collect { items ->
-                        adapter.submitList(orderForList(items, System.currentTimeMillis()))
-                        binding.empty.isVisible = items.isEmpty()
-                    }
+                    dao.observeAll().combine(dao.observeGroups()) { items, groups -> items to groups }
+                        .collect { (items, groups) ->
+                            adapter.submitList(buildEntries(items, groups, System.currentTimeMillis()))
+                            binding.empty.isVisible = items.isEmpty()
+                        }
                 }
                 launch { repository.lastRunAt.collect(::showLastRun) }
                 launch {
@@ -136,37 +145,17 @@ class MainActivity : AppCompatActivity() {
         repository.add(text)
     }
 
-    private fun showAddDialog() {
-        val dialogBinding = DialogAddBinding.inflate(layoutInflater)
-        clipboardText()?.takeIf { ProductUrl.parse(it) is ProductUrl.Result.Ok }?.let {
-            dialogBinding.urlInput.setText(it)
-        }
-        MaterialAlertDialogBuilder(this)
-            .setTitle(R.string.add_title)
-            .setView(dialogBinding.root)
-            .setPositiveButton(R.string.add) { _, _ ->
-                repository.add(dialogBinding.urlInput.text?.toString().orEmpty())
-            }
-            .setNegativeButton(R.string.cancel, null)
-            .show()
-    }
-
-    private fun clipboardText(): String? {
-        val clipboard = getSystemService(ClipboardManager::class.java) ?: return null
-        val clip = clipboard.primaryClip ?: return null
-        if (clip.itemCount == 0) return null
-        return clip.getItemAt(0).coerceToText(this)?.toString()
-    }
-
     private fun showAddState(state: AddState) {
         when (state) {
             AddState.Idle, is AddState.Working -> Unit
             is AddState.Added -> {
-                Snackbar.make(
-                    binding.root,
-                    "Added ${state.item.name} at ${formatPence(state.item.currentPrice)}",
-                    Snackbar.LENGTH_LONG,
-                ).show()
+                val added = "Added at ${formatPence(state.item.currentPrice)}"
+                if (state.askForGroup) {
+                    // Picking nothing (or backing out) leaves it as its own row.
+                    pickGroup(repository, state.item, "$added. ${getString(R.string.add_to_group)}")
+                } else {
+                    Snackbar.make(binding.root, "${state.item.name}: $added", Snackbar.LENGTH_LONG).show()
+                }
                 repository.consumeAddState()
             }
             is AddState.AlreadyTracked -> {

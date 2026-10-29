@@ -53,8 +53,18 @@ class PriceChartView @JvmOverloads constructor(
     }
     private val path = Path()
 
-    fun setData(points: List<PricePoint>, target: Int?) {
-        this.points = points
+    /** One line on the chart, such as one shop's prices within a group. */
+    data class Series(val points: List<PricePoint>, val color: Int)
+
+    private var series: List<Series> = emptyList()
+
+    /** Shows a single item's history, in the theme colour. */
+    fun setData(points: List<PricePoint>, target: Int?) = setSeries(listOf(Series(points, lineColor)), target)
+
+    /** Shows several lines on shared axes. Each series' points must be in time order. */
+    fun setSeries(series: List<Series>, target: Int?) {
+        this.series = series.filter { it.points.isNotEmpty() }
+        this.points = this.series.flatMap { it.points }
         this.target = target
         invalidate()
     }
@@ -89,28 +99,36 @@ class PriceChartView @JvmOverloads constructor(
         canvas.drawText(hiLabel, paddingLeft.toFloat(), top + textPaint.textSize / 3, textPaint)
         canvas.drawText(loLabel, paddingLeft.toFloat(), bottom + textPaint.textSize / 3, textPaint)
 
-        val t0 = points.first().checkedAt
-        val t1 = maxOf(points.last().checkedAt, t0 + 1)
-        fun x(t: Long) = if (points.size == 1) right else left + (right - left) * (t - t0) / (t1 - t0).toFloat()
+        val t0 = points.minOf { it.checkedAt }
+        val tLast = points.maxOf { it.checkedAt }
+        val t1 = maxOf(tLast, t0 + 1)
+        val single = t0 == tLast
+        fun x(t: Long) = if (single) right else left + (right - left) * (t - t0) / (t1 - t0).toFloat()
         fun y(p: Int) = bottom - (bottom - top) * (p - lo) / (hi - lo).toFloat()
 
         target?.let { canvas.drawLine(left, y(it), right, y(it), targetPaint) }
 
-        path.reset()
-        var prevY = y(points.first().price)
-        path.moveTo(if (points.size == 1) left else x(t0), prevY)
-        for (pt in points.drop(1)) {
-            path.lineTo(x(pt.checkedAt), prevY)
-            prevY = y(pt.price)
-            path.lineTo(x(pt.checkedAt), prevY)
+        for (line in series) {
+            linePaint.color = line.color
+            dotPaint.color = line.color
+            val pts = line.points
+            path.reset()
+            var prevY = y(pts.first().price)
+            path.moveTo(if (single) left else x(pts.first().checkedAt), prevY)
+            for (pt in pts.drop(1)) {
+                path.lineTo(x(pt.checkedAt), prevY)
+                prevY = y(pt.price)
+                path.lineTo(x(pt.checkedAt), prevY)
+            }
+            // Each line holds its latest price to the right edge, so shops can be compared at "now".
+            path.lineTo(right, prevY)
+            canvas.drawPath(path, linePaint)
+            for (pt in pts) canvas.drawCircle(x(pt.checkedAt), y(pt.price), 3.5f * density, dotPaint)
         }
-        path.lineTo(right, prevY)
-        canvas.drawPath(path, linePaint)
-        for (pt in points) canvas.drawCircle(x(pt.checkedAt), y(pt.price), 3.5f * density, dotPaint)
 
-        // Date labels under the start and end of the line.
+        // Date labels under the start and end of the chart.
         val startLabel = DATE.format(localDate(t0))
-        val endLabel = DATE.format(localDate(points.last().checkedAt))
+        val endLabel = DATE.format(localDate(tLast))
         val baseline = height - paddingBottom.toFloat()
         canvas.drawText(startLabel, left, baseline, textPaint)
         if (endLabel != startLabel) {

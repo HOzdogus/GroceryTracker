@@ -25,7 +25,8 @@ class ItemRepository(
     sealed class AddState {
         data object Idle : AddState()
         data class Working(val shop: Shop) : AddState()
-        data class Added(val item: Item) : AddState()
+        /** [askForGroup] is true when the item was added without a group, so the UI can offer one. */
+        data class Added(val item: Item, val askForGroup: Boolean) : AddState()
         data class AlreadyTracked(val item: Item) : AddState()
         data class Rejected(val reason: String, val received: String) : AddState()
         data class Failed(val title: String, val reason: String, val details: String) : AddState()
@@ -40,8 +41,11 @@ class ItemRepository(
         if (_addState.value !is AddState.Working) _addState.value = AddState.Idle
     }
 
-    /** Adds the product linked in [text], which can be a bare URL or shared text containing one. */
-    fun add(text: String) {
+    /**
+     * Adds the product linked in [text], which can be a bare URL or shared text containing one.
+     * With [groupId], the new item goes straight into that group.
+     */
+    fun add(text: String, groupId: Long? = null) {
         if (_addState.value is AddState.Working) return
         val parsed = when (val r = ProductUrl.parse(text)) {
             is ProductUrl.Result.Invalid -> {
@@ -53,14 +57,14 @@ class ItemRepository(
         _addState.value = AddState.Working(parsed.shop)
         scope.launch {
             _addState.value = try {
-                addParsed(parsed)
+                addParsed(parsed, groupId)
             } catch (e: Exception) {
                 AddState.Failed("Couldn't add item", "Something went wrong.", "${parsed.url}\n$e")
             }
         }
     }
 
-    private suspend fun addParsed(parsed: ProductUrl.Result.Ok): AddState {
+    private suspend fun addParsed(parsed: ProductUrl.Result.Ok, groupId: Long?): AddState {
         dao.findByUrl(parsed.url)?.let { return AddState.AlreadyTracked(it) }
 
         return when (val result = fetcher.fetch(parsed.url, parsed.shop)) {
@@ -78,6 +82,7 @@ class ItemRepository(
                     nectarPrice = result.nectarPrice,
                     addedAt = now,
                     lastCheckedAt = now,
+                    groupId = groupId,
                 )
                 val id = dao.insert(item)
                 dao.insertPrice(
@@ -86,7 +91,7 @@ class ItemRepository(
                         wasPrice = result.wasPrice, nectarPrice = result.nectarPrice, checkedAt = now,
                     )
                 )
-                AddState.Added(item.copy(id = id))
+                AddState.Added(item.copy(id = id), askForGroup = groupId == null)
             }
             is FetchResult.Blocked -> AddState.Failed(
                 "${parsed.shop.label} blocked the check",
@@ -97,7 +102,33 @@ class ItemRepository(
         }
     }
 
-    suspend fun delete(item: Item) = dao.delete(item)
+    suspend fun delete(item: Item) {
+        dao.delete(item)
+        dao.deleteEmptyGroups()
+    }
+
+    /** Moves [item] into [groupId], or out of any group when null. */
+    suspend fun setGroup(item: Item, groupId: Long?) {
+        dao.setGroup(item.id, groupId)
+        dao.deleteEmptyGroups()
+    }
+
+    /** Creates a group called [name] and moves [item] into it. */
+    suspend fun createGroup(name: String, item: Item): Long {
+        val id = dao.insertGroup(ProductGroup(name = name.trim()))
+        setGroup(item, id)
+        return id
+    }
+
+    suspend fun renameGroup(groupId: Long, name: String) = dao.renameGroup(groupId, name.trim())
+
+    /** Removes the group; its items stay and go back to being separate rows. */
+    suspend fun ungroup(groupId: Long) {
+        dao.clearGroup(groupId)
+        dao.deleteGroup(groupId)
+    }
+
+    suspend fun groups(): List<ProductGroup> = dao.getGroups()
 
     /** Loads the item's page and describes what the price and offer detection saw. */
     suspend fun diagnose(item: Item): String = when (val result = fetcher.fetch(item.url, item.shop)) {
@@ -129,18 +160,20 @@ class ItemRepository(
     val lastRunAt: StateFlow<Long?> = _lastRunAt
 
     /** Checks every item now, showing progress through [checkState]. */
-    fun checkAllNow() = checkNow(null)
+    fun checkAllNow() = checkNow(recordRun = true) { dao.getAll() }
 
     /** Checks one item now, showing progress through [checkState]. */
-    fun checkItemNow(id: Long) = checkNow(id)
+    fun checkItemNow(id: Long) = checkNow(recordRun = false) { listOfNotNull(dao.get(id)) }
 
-    private fun checkNow(id: Long?) {
+    /** Checks every item in a group now, showing progress through [checkState]. */
+    fun checkGroupNow(groupId: Long) = checkNow(recordRun = false) { dao.getGroupItems(groupId) }
+
+    private fun checkNow(recordRun: Boolean, select: suspend () -> List<Item>) {
         if (_checkState.value is CheckState.Running) return
         _checkState.value = CheckState.Running(0, 0, "")
         scope.launch {
             _checkState.value = try {
-                val items = if (id == null) dao.getAll() else listOfNotNull(dao.get(id))
-                CheckState.Finished(summarise(checkItems(items, recordRun = id == null)))
+                CheckState.Finished(summarise(checkItems(select(), recordRun)))
             } catch (e: Exception) {
                 CheckState.Finished("Check failed: $e")
             }

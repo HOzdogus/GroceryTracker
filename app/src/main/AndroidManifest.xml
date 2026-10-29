@@ -28,6 +28,11 @@
         </activity>
 
         <activity
+            android:name=".GroupActivity"
+            android:exported="false"
+            android:parentActivityName=".MainActivity" />
+
+        <activity
             android:name=".ItemDetailActivity"
             android:exported="false"
             android:parentActivityName=".MainActivity" />

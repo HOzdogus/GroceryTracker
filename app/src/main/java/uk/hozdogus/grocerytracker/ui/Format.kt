@@ -11,6 +11,12 @@ import kotlin.math.abs
 fun formatPence(pence: Int?): String =
     if (pence == null) "–" else String.format(Locale.UK, "£%d.%02d", pence / 100, pence % 100)
 
+/** The first few words of a product name, which run long: for notifications and suggested group names. */
+fun shortName(name: String): String {
+    val words = name.split(' ').filter { it.isNotBlank() }
+    return if (words.size <= 5) name else words.take(5).joinToString(" ") + "…"
+}
+
 /** "Nectar £1.75" and/or "was £2.15", or null when the item has no offer. */
 fun offerText(item: Item): String? = listOfNotNull(
     item.nectarPrice?.let { "Nectar ${formatPence(it)}" },

@@ -18,6 +18,7 @@ import uk.hozdogus.grocerytracker.MainActivity
 import uk.hozdogus.grocerytracker.R
 import uk.hozdogus.grocerytracker.data.CheckOutcome
 import uk.hozdogus.grocerytracker.ui.formatPence
+import uk.hozdogus.grocerytracker.ui.shortName
 
 /** Posts price-drop and target notifications: one per item, or a single summary when several change. */
 class Notifier(context: Context) {
@@ -55,12 +56,6 @@ class Notifier(context: Context) {
                     .build(),
             )
         }
-    }
-
-    /** Short name for notifications: the first few words, as product names run long. */
-    private fun shortName(name: String): String {
-        val words = name.split(' ').filter { it.isNotBlank() }
-        return if (words.size <= 5) name else words.take(5).joinToString(" ") + "…"
     }
 
     private fun describe(o: CheckOutcome): News? {

@@ -5,7 +5,7 @@ import androidx.room.Index
 import androidx.room.PrimaryKey
 
 /** A tracked product. All prices are in pence. */
-@Entity(tableName = "items", indices = [Index(value = ["url"], unique = true)])
+@Entity(tableName = "items", indices = [Index(value = ["url"], unique = true), Index("groupId")])
 data class Item(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val url: String,
@@ -25,4 +25,6 @@ data class Item(
     /** Why the last check failed, shown on the detail screen. Null after a successful check. */
     val lastCheckError: String? = null,
     val lastChangeAt: Long? = null,
+    /** The [ProductGroup] this item belongs to, if any. Cleared by the app when a group is removed. */
+    val groupId: Long? = null,
 )

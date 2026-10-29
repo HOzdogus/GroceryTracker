@@ -18,6 +18,7 @@ import com.google.android.material.snackbar.Snackbar
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import uk.hozdogus.grocerytracker.data.Item
+import uk.hozdogus.grocerytracker.data.ProductGroup
 import uk.hozdogus.grocerytracker.data.ItemRepository.CheckState
 import uk.hozdogus.grocerytracker.databinding.ActivityDetailBinding
 import uk.hozdogus.grocerytracker.databinding.DialogTargetBinding
@@ -27,6 +28,7 @@ import uk.hozdogus.grocerytracker.ui.formatPence
 import uk.hozdogus.grocerytracker.ui.formatWhen
 import uk.hozdogus.grocerytracker.ui.offerText
 import uk.hozdogus.grocerytracker.ui.parsePence
+import uk.hozdogus.grocerytracker.ui.pickGroup
 import uk.hozdogus.grocerytracker.ui.recentChange
 import uk.hozdogus.grocerytracker.ui.shopColor
 
@@ -55,19 +57,24 @@ class ItemDetailActivity : AppCompatActivity() {
             item?.let { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(it.url))) }
         }
         binding.delete.setOnClickListener { item?.let(::confirmDelete) }
+        binding.changeGroup.setOnClickListener {
+            item?.let { pickGroup(repository, it, getString(R.string.change_group)) }
+        }
 
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 launch {
-                    dao.observe(id).combine(dao.observeHistory(id)) { item, history -> item to history }
-                        .collect { (item, history) ->
-                            if (item == null) {
-                                finish()
-                            } else {
-                                show(item)
-                                binding.chart.setData(history, item.targetPrice)
-                            }
+                    combine(dao.observe(id), dao.observeHistory(id), dao.observeGroups()) { item, history, groups ->
+                        Triple(item, history, groups)
+                    }.collect { (item, history, groups) ->
+                        if (item == null) {
+                            finish()
+                        } else {
+                            show(item)
+                            showGroup(groups.firstOrNull { it.id == item.groupId })
+                            binding.chart.setData(history, item.targetPrice)
                         }
+                    }
                 }
                 launch { repository.checkState.collect(::showCheckState) }
             }
@@ -141,6 +148,11 @@ class ItemDetailActivity : AppCompatActivity() {
             dialog.findViewById<android.widget.TextView>(android.R.id.message)?.setTextIsSelectable(true)
         }
         return true
+    }
+
+    private fun showGroup(group: ProductGroup?) {
+        binding.groupLabel.text = group?.let { "Group: ${it.name}" } ?: "Not in a group"
+        binding.changeGroup.text = getString(if (group == null) R.string.add_to_group_short else R.string.change)
     }
 
     private fun showCheckState(state: CheckState) {
