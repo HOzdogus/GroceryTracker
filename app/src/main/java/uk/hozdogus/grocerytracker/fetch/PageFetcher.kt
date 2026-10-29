@@ -142,9 +142,16 @@ class PageFetcher(context: Context) {
             return when {
                 read?.optBoolean("blocked") == true || httpStatus == 403 -> FetchResult.Blocked(details)
                 networkError != null -> FetchResult.Failed("Couldn't load the page.", details)
+                read?.optJSONObject("product")?.let(::foreignCurrency) != null -> FetchResult.Failed(
+                    "The price isn't in pounds (${read.optJSONObject("product")?.let(::foreignCurrency)}).", details,
+                )
                 read?.optJSONObject("product") != null ->
                     FetchResult.Failed("Found the product but no price (it may be out of stock).", details)
-                else -> FetchResult.Failed("Couldn't find the product's price on the page.", details)
+                else -> FetchResult.Failed(
+                    "Couldn't find a price on the page. This app reads the product data shops publish for search " +
+                        "engines; this page may not have any, or may need you to pick a store first.",
+                    details,
+                )
             }
         }
 
@@ -170,6 +177,7 @@ class PageFetcher(context: Context) {
 
     private fun toSuccess(read: JSONObject): FetchResult.Success? {
         val product = read.optJSONObject("product") ?: return null
+        if (foreignCurrency(product) != null) return null
         val price = product.str("price")?.let(::toPence) ?: return null
         if (price <= 0) return null
         val name = product.str("name") ?: read.str("ogTitle") ?: read.str("title") ?: "Unnamed item"
@@ -184,7 +192,7 @@ class PageFetcher(context: Context) {
         val nectar = (api?.str("nectar") ?: offers?.str("nectar"))?.let(::toPence)?.takeIf { it in 1 until price }
 
         val debug = buildString {
-            append("Price (JSON-LD): ").append(product.str("price"))
+            append("Price (").append(product.str("source") ?: "JSON-LD").append("): ").append(product.str("price"))
             append("\nWas price (JSON-LD): ").append(product.str("ldWas") ?: "none")
             append("\nText around the price: ").append(offers?.str("context") ?: "(price element not found)")
             append("\nWas price in that text: ").append(offers?.str("was") ?: "none")
@@ -197,7 +205,13 @@ class PageFetcher(context: Context) {
         return FetchResult.Success(name.trim(), image, price, was, nectar, debug)
     }
 
-    private fun toPence(text: String): Int? = text.toDoubleOrNull()?.let { (it * 100).roundToInt() }
+    /** "£1.26", "1,234.00" and "1.26" all read as pounds. */
+    private fun toPence(text: String): Int? =
+        text.replace(Regex("[^0-9.]"), "").toDoubleOrNull()?.let { (it * 100).roundToInt() }
+
+    /** The currency code when the page says the price isn't in pounds, else null. */
+    private fun foreignCurrency(product: JSONObject): String? =
+        product.str("currency")?.uppercase()?.takeIf { it != "GBP" && it != "£" }
 
     /** optString() turns JSON null into "null"; this returns real null for missing or blank values. */
     private fun JSONObject.str(key: String): String? =
@@ -226,12 +240,18 @@ class PageFetcher(context: Context) {
               r.blocked = /access denied|are you a robot|captcha|request blocked|verify you are human|pardon our interruption|unusual traffic/i.test(t + ' ' + r.title);
               function first(x){ return Array.isArray(x) ? x[0] : x; }
               function list(x){ return x == null ? [] : (Array.isArray(x) ? x : [x]); }
-              function isProduct(n){ var ty = n['@type']; return ty === 'Product' || (Array.isArray(ty) && ty.indexOf('Product') >= 0); }
+              function hasType(n, t){ var ty = n['@type']; return ty === t || (Array.isArray(ty) && ty.indexOf(t) >= 0); }
               function walk(n){
                 if (!n || typeof n !== 'object') return null;
                 if (Array.isArray(n)) { for (var i = 0; i < n.length; i++) { var f = walk(n[i]); if (f) return f; } return null; }
-                if (isProduct(n)) return n;
-                return n['@graph'] ? walk(n['@graph']) : null;
+                if (hasType(n, 'Product')) return n;
+                // A product with sizes or flavours: use the first variant's offer, keeping the group's name.
+                if (hasType(n, 'ProductGroup')) {
+                  var v = first(n.hasVariant);
+                  if (n.offers || !v) return n;
+                  return {name: n.name || v.name, image: n.image || v.image, offers: v.offers};
+                }
+                return walk(n['@graph']) || walk(n.mainEntity);
               }
               var scripts = document.querySelectorAll('script[type="application/ld+json"]');
               for (var i = 0; i < scripts.length && !r.product; i++) {
@@ -249,11 +269,26 @@ class PageFetcher(context: Context) {
                   });
                   var img = first(p.image);
                   if (img && typeof img === 'object') img = img.url || img.contentUrl;
-                  r.product = {name: p.name || null, image: img || null, price: price != null ? String(price) : null, ldWas: was};
+                  r.product = {name: p.name || null, image: img || null, price: price != null ? String(price) : null,
+                               ldWas: was, currency: o.priceCurrency || null, source: 'JSON-LD'};
                 } catch (e) {}
               }
+              // Pages without JSON-LD often still carry standard price tags.
+              if (!r.product || !r.product.price) {
+                var attr = function(sel){ var e = document.querySelector(sel); return e ? (e.getAttribute('content') || '').trim() : ''; };
+                var mp = attr('meta[property="product:price:amount"]') || attr('meta[property="og:price:amount"]') ||
+                         attr('meta[itemprop="price"]') || attr('[itemprop="price"][content]');
+                if (mp) {
+                  r.product = {
+                    name: (r.product && r.product.name) || null, image: (r.product && r.product.image) || null,
+                    price: mp, ldWas: null, source: 'meta tag',
+                    currency: attr('meta[property="product:price:currency"]') || attr('meta[property="og:price:currency"]') ||
+                              attr('meta[itemprop="priceCurrency"]') || attr('[itemprop="priceCurrency"][content]') || null
+                  };
+                }
+              }
               if (r.product && r.product.price && document.body) {
-                var v = Number(r.product.price);
+                var v = Number(String(r.product.price).replace(/[^\d.]/g, ''));
                 var shown = ['£' + v.toFixed(2)];
                 if (v < 1) shown.push(Math.round(v * 100) + 'p');
                 var el = null, all = document.body.getElementsByTagName('*');

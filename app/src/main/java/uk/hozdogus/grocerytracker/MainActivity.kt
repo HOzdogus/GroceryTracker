@@ -165,7 +165,7 @@ class MainActivity : AppCompatActivity() {
             is AddState.Rejected -> {
                 showMessage(
                     "Not a product link",
-                    "${state.reason}\n\nShare or paste a product page from asda.com or sainsburys.co.uk.\n\n" +
+                    "${state.reason}\n\nShare or paste a link to a product's page on a shop's website.\n\n" +
                         "Received:\n${state.received.ifBlank { "(nothing)" }}",
                 )
                 repository.consumeAddState()

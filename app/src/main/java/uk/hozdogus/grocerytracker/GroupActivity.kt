@@ -6,7 +6,6 @@ import android.os.Bundle
 import android.view.Menu
 import android.view.MenuItem
 import androidx.appcompat.app.AppCompatActivity
-import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
@@ -26,7 +25,6 @@ import uk.hozdogus.grocerytracker.ui.PriceChartView
 import uk.hozdogus.grocerytracker.ui.askGroupName
 import uk.hozdogus.grocerytracker.ui.cheapest
 import uk.hozdogus.grocerytracker.ui.formatPence
-import uk.hozdogus.grocerytracker.ui.shopColor
 import uk.hozdogus.grocerytracker.ui.showAddDialog
 
 /** One product across shops: which is cheapest now, each shop's price, and their history together. */
@@ -106,7 +104,7 @@ class GroupActivity : AppCompatActivity() {
     private fun showChart(items: List<Item>, history: List<PricePoint>) {
         val byItem = history.groupBy { it.itemId }
         val series = items.map { item ->
-            PriceChartView.Series(byItem[item.id].orEmpty(), ContextCompat.getColor(this, shopColor(item.shop)))
+            PriceChartView.Series(byItem[item.id].orEmpty(), item.shop.color)
         }
         binding.chart.setSeries(series, target = null)
     }

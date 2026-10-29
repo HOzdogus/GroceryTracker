@@ -30,7 +30,6 @@ import uk.hozdogus.grocerytracker.ui.offerText
 import uk.hozdogus.grocerytracker.ui.parsePence
 import uk.hozdogus.grocerytracker.ui.pickGroup
 import uk.hozdogus.grocerytracker.ui.recentChange
-import uk.hozdogus.grocerytracker.ui.shopColor
 
 class ItemDetailActivity : AppCompatActivity() {
 
@@ -85,7 +84,7 @@ class ItemDetailActivity : AppCompatActivity() {
         this.item = item
         supportActionBar?.title = item.shop.label
         binding.shopBadge.text = item.shop.label
-        binding.shopBadge.backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this, shopColor(item.shop)))
+        binding.shopBadge.backgroundTintList = ColorStateList.valueOf(item.shop.color)
         binding.name.text = item.name
         binding.price.text = formatPence(item.currentPrice)
 

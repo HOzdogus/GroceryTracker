@@ -87,7 +87,7 @@ class EntryAdapter(
     private fun bindShopAndPrice(b: ItemRowBinding, shop: Shop, item: Item) {
         val ctx = b.root.context
         b.shopBadge.text = shop.label
-        b.shopBadge.backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(ctx, shopColor(shop)))
+        b.shopBadge.backgroundTintList = ColorStateList.valueOf(shop.color)
         b.price.text = formatPence(item.currentPrice)
         val change = recentChange(item, System.currentTimeMillis())
         b.change.isVisible = change != null
@@ -102,5 +102,3 @@ class EntryAdapter(
         override fun areContentsTheSame(a: ListEntry, b: ListEntry) = a == b
     }
 }
-
-fun shopColor(shop: Shop) = if (shop == Shop.ASDA) R.color.asda_green else R.color.sainsburys_orange
